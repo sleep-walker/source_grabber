@@ -8,12 +8,16 @@ SRC_DIR=$WORK_DIR/e17-git
 OBS_PRJ=X11:Enlightenment:Nightly
 OBS_PRJ_DIR="$WORK_DIR/$OBS_PRJ"
 
+PACKAGES=(
+	eina
+)
+
 version_hook() {
 	git log -n 1 "$OBS_PKG" | \
 	sed -n 's~^[[:blank:]]*git-svn-id: svn+ssh://svn.enlightenment.org/var/svn/e/trunk@\([0-9]\+\).*~\1~p'
 }
 
-new_version_hook() {
+new_version() {
 	# remove suffix
 	NEW_VERSION="${RESULT_TARBALL%.tar.bz2}"
 	# remove path (bash equivalent of basename), name etc.
@@ -22,9 +26,26 @@ new_version_hook() {
 
 pre_update_tarball_hook() {
 	NOCONFIGURE=yes ./autogen.sh
+	# I don't want to follow version dependencies just for making tarball
+	cp "configure.ac" "configure.ac.tmp"
+	sed 's@ \(>=\?\) [0-9.]*@ \1 0.0.0@g' configure.ac.tmp > configure.ac
 }
 
-PACKAGES=(
-	eina
-)
+post_configure_hook() {
+	# now restore original configure.ac for `make dist'
+	cp configure.ac.tmp configure.ac
+}
+
+update_source_repo() {
+	update_git
+}
+
+need_update() {
+	need_update_git
+}
+
+
+update_spec() {
+	update_spec_git
+}
 
