@@ -1,0 +1,30 @@
+#!/bin/bash
+# repository type
+REPO_TYPE=GIT
+
+SRC_URL=git://git.enlightenment.org/git/e.git
+# where is/should be the repository stored locally
+SRC_DIR=$WORK_DIR/e17-git
+OBS_PRJ=X11:Enlightenment:Nightly
+OBS_PRJ_DIR="$WORK_DIR/$OBS_PRJ"
+
+version_hook() {
+	git log -n 1 "$OBS_PKG" | \
+	sed -n 's~^[[:blank:]]*git-svn-id: svn+ssh://svn.enlightenment.org/var/svn/e/trunk@\([0-9]\+\).*~\1~p'
+}
+
+new_version_hook() {
+	# remove suffix
+	NEW_VERSION="${RESULT_TARBALL%.tar.bz2}"
+	# remove path (bash equivalent of basename), name etc.
+	NEW_VERSION="${NEW_VERSION##*-}"
+}
+
+pre_update_tarball_hook() {
+	NOCONFIGURE=yes ./autogen.sh
+}
+
+PACKAGES=(
+	eina
+)
+
