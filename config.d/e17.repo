@@ -8,9 +8,33 @@ SRC_DIR=$WORK_DIR/e17-git
 OBS_PRJ=X11:Enlightenment:Nightly
 OBS_PRJ_DIR="$WORK_DIR/$OBS_PRJ"
 
+# packages in the repository
 PACKAGES=(
 	eina
+        eet
+        evas
+        ecore
+        eio
+        emotion
+        embryo
+        edje
+        e_dbus
+        efreet
+        eeze
+        elementary
+        e17
+        econcentration
+        mail
+        taskbar
 )
+
+# irregular names and directories
+e17_SRC_REL_DIR=e
+mail_OBS_PKG=e_module-mail
+mail_SRC_REL_DIR=E-MODULES-EXTRA/mail
+econcentration_SRC_REL_DIR=GAMES/econcentration
+taskbar_OBS_PKG=e_module-taskbar
+taskbar_SRC_REL_DIR=E-MODULES-EXTRA/taskbar
 
 version_hook() {
 	git log -n 1 "$OBS_PKG" | \
@@ -21,14 +45,34 @@ new_version() {
 	# remove suffix
 	NEW_VERSION="${RESULT_TARBALL%.tar.bz2}"
 	# remove path (bash equivalent of basename), name etc.
-	NEW_VERSION="${NEW_VERSION##*-}"
+	NEW_VERSION="${NEW_VERSION##*/}"
+	# FIXME: this is just hack for now
+	if [ "$PKG" = econcentration ]; then
+		NEW_SVN_REVISION="$(git --git-dir="$SRC_DIR/.git" --work-tree="$SRC_DIR" log -n 1 "$SRC_DIR/$SRC_REL_DIR" | sed -n 's/.*trunk@\([0-9]\+\).*/\1/p')"
+		NEW_VERSION="${NEW_VERSION#*-}"
+		NEW_ALPHA="${NEW_VERSION}"
+		NEW_VERSION="${NEW_VERSION%-alpha}.$NEW_SVN_REVISION"
+		mv "$OBS_PRJ_DIR/$OBS_PKG/$RESULT_TARBALL" "$OBS_PRJ_DIR/$OBS_PKG/$PKG-$NEW_VERSION.tar.bz2"
+		local DIRTMP="$(mktemp -d)"
+		(
+			cd "$DIRTMP"
+			tar xjf "$OBS_PRJ_DIR/$OBS_PKG/$RESULT_TARBALL"
+			mv "$PKG"* "$PKG-$NEW_VERSION"
+			tar cjf "$OBS_PRJ_DIR/$OBS_PKG/$PKG-$NEW_VERSION.tar.bz2" "$PKG-$NEW_VERSION"
+			cd ..
+			rm -rf "$DIRTMP"
+		)
+	else
+		NEW_VERSION="${NEW_VERSION##*-}"
+	fi
 }
 
 pre_update_tarball_hook() {
-	NOCONFIGURE=yes ./autogen.sh
 	# I don't want to follow version dependencies just for making tarball
 	cp "configure.ac" "configure.ac.tmp"
 	sed 's@ \(>=\?\) [0-9.]*@ \1 0.0.0@g' configure.ac.tmp > configure.ac
+	# now do some e17 specific preparations
+	NOCONFIGURE=yes ./autogen.sh
 }
 
 post_configure_hook() {
