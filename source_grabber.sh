@@ -76,6 +76,7 @@ warn() {
 error() {
 	local COLOR="$RED"
 	colorize "$@"
+	return 1
 }
 
 report_on_error() {
@@ -115,6 +116,28 @@ pkg_specific() {
 	else
 		return 255
 	fi
+}
+
+rename_dir_in_tarball() {
+	if [ "$RESULT_TARBALL" = "$1.tar.bz2" ]; then
+		warn "Result tarball and the new one after rename is the same, skipping"
+		return 0
+	fi
+	local TMPDIR="$(mktemp -d)"
+	(
+		set -e
+		cd "$TMPDIR"
+		tar xjf "$SRC_DIR/$SRC_REL_DIR/$RESULT_TARBALL" || error "Cannot untar result tarball"
+		mv "${RESULT_TARBALL%.tar.bz2}" "$1" || error "Cannot rename: " "'${RESULT_TARBALL%.tar.bz2}' --> '$1'"
+		tar cjf "$SRC_DIR/$SRC_REL_DIR/$1.tar.bz2" "$1" || error "Cannot tar: " "'$1' into '$SRC_DIR/$SRC_REL_DIR/$1.tar.bz2'"
+		rm "$SRC_DIR/$SRC_REL_DIR/$RESULT_TARBALL" || error "Cannot remove old result tarball"
+		cp "$1.tar.bz2" "$SRC_DIR/$SRC_REL_DIR/"
+	)
+	if [ $? -ne 0 ]; then
+		return 1
+	fi
+	RESULT_TARBALL="$1.tar.bz2"
+	cd "$OLD_PWD"
 }
 
 ###
@@ -292,7 +315,7 @@ find_result_tarball() {
 		return "$RES"
 	fi
 	RESULT_TARBALL="$(ls "${SRC_REL_DIR##*/}"*.tar.bz2 2>/dev/null)"
-	if [ -z "$RESULT_TARBALL" ]; then
+	if [ "$(wc -l <<< "$RESULT_TARBALL")" -ne 1 ]; then
 		error "      * Cannot locate tarball result"
 		return 1
 	fi

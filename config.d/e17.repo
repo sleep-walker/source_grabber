@@ -9,6 +9,7 @@ OBS_PRJ=X11:Enlightenment:Nightly
 OBS_PRJ_DIR="$WORK_DIR/$OBS_PRJ"
 
 # packages in the repository
+# NOTE: this names should correspond with upstream names of tarballs so new_version will work easily
 PACKAGES=(
 	eina
         eet
