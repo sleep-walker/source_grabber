@@ -188,7 +188,7 @@ update_svn() {
 need_update_git() {
 	NEW_REVISION="$(git --git-dir="$SRC_DIR/.git" log --format=oneline -n 1 ${SRC_REL_DIR:+-- "$SRC_REL_DIR"} | cut -d\  -f1)"
 	# what is last revision in spec file?
-	if [ -z "$REVISION" ] || ! [[ $REVISION =~ [0-9a-f]\+ ]]; then
+	if [ -z "$REVISION" ] || ! [[ $REVISION =~ ^[0-9a-f]\+$ ]]; then
 		return 0
 	fi
 	# were there any changes since that revision?
@@ -243,10 +243,6 @@ autocommit() {
 }
 
 commit_obs_package() {
-	if [ "$SKIP_COMMIT" ]; then
-		inform "    * Skipping commit to OBS ${SKIP_COMMIT:+(SKIP_COMMIT)}"
-		return 0
-	fi
 	local OLD_PWD="$PWD"
 	local MSG="source_grabber autoupdate to revision $NEW_REVISION"
 	cd "${SPEC%/*}"
@@ -259,6 +255,11 @@ commit_obs_package() {
 	report_on_error osc ar || warn "    * Error occured during osc addremove"
 	inform "osc vc"
 	report_on_error osc vc -m "$MSG" || warn "    * Error occured during update of .changes file"
+	if [ "$SKIP_COMMIT" ]; then
+		inform "    * Skipping commit to OBS ${SKIP_COMMIT:+(SKIP_COMMIT)}"
+		cd "$OLD_PWD"
+		return 0
+	fi
 	inform "osc ci"
 	if ! report_on_error autocommit "$MSG"; then
 		error "    * Error occured during commit"
@@ -555,7 +556,7 @@ dependency_hack() {
     # don't require any specific version
     sed 's@ \(>=\?\) [0-9.]*@ \1 0.0.0@g' configure.ac.backup > configure.ac
     # create configure
-    autogen -ifv
+    autoreconf -ifv
     # put changes back, so original file gets to result tarball
     cp configure.ac.backup configure.ac
 }
@@ -590,6 +591,15 @@ new_version() {
 	if [ "$WITHOUT_END" = "${WITHOUT_BEGIN}" ]; then
 		error "Cannot cut '$END' from end of '$WITHOUT_BEGIN'"
 		return 1
+	fi
+	# it's not possible to have '-' in version string
+	local WITHOUT_DASH="${WITHOUT_END%%-*}"
+	if [ "$WITHOUT_END" != "${WITHOUT_DASH}" ]; then
+		# so if there is, use only left part
+		# but also rename tarball and contained directory
+		RENAME_TO="${WITHOUT_END%%-*}"
+	else
+		unset RENAME_TO
 	fi
 	NEW_VERSION="${WITHOUT_END}"
 }
@@ -667,6 +677,7 @@ need_update() {
 update_project_package() {
 	#locate_spec
 	(
+		SPEC="$1"
 		read_spec || exit 1
 		
 		inform "    * Checking if update is needed"
@@ -726,6 +737,10 @@ update_vcs() {
 update_project() {
 #	$1	project directory
 	OBS_PRJ_DIR="$1"
+	# if it is not absolute path, make it so (well, almost)
+	if [ "${1:0:1}" != '/' ]; then
+		OBS_PRJ_DIR="$PWD/$OBS_PRJ_DIR"
+	fi
 	if [ ! -d "$1" ]; then
 		error "Project '$1' doesn't exists"
 		return 1
@@ -739,7 +754,6 @@ update_project() {
 	local line
 	while read line; do
 			ARRAY=( $line )
-			echo "${ARRAY[*]}"
 			REPO_TYPE="${ARRAY[0]}"
 			SRC_URL="${ARRAY[1]}"
 			SPEC="${ARRAY[2]}"
