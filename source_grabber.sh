@@ -4,7 +4,7 @@
 # Source Grabber
 # --------------
 #
-# Tool for easy updating packages fro VCS as SVN or GIT.
+# Tool for easy updating packages from VCS as SVN or GIT.
 #
 # Author: Tomas Cech <sleep_walker@suse.cz>
 #
@@ -27,6 +27,11 @@
 #      e] update spec file (and note current repository version)
 #      f] add record to .changes file
 #      g] commit changes
+#
+# - it should work with directories of project (parameter will be project dir)
+# - I may need to mark spec files which I'd like to take care of
+# - how to update VCS repository only once for whole project? how to remember such
+# - 
 #
 ################################################################################
 
@@ -127,11 +132,11 @@ rename_dir_in_tarball() {
 	(
 		set -e
 		cd "$TMPDIR"
-		tar xjf "$SRC_DIR/$SRC_REL_DIR/$RESULT_TARBALL" || error "Cannot untar result tarball"
+		tar xjf "$SRC_DIR${SRC_REL_DIR:+/$SRC_REL_DIR}/$RESULT_TARBALL" || error "Cannot untar result tarball"
 		mv "${RESULT_TARBALL%.tar.bz2}" "$1" || error "Cannot rename: " "'${RESULT_TARBALL%.tar.bz2}' --> '$1'"
-		tar cjf "$SRC_DIR/$SRC_REL_DIR/$1.tar.bz2" "$1" || error "Cannot tar: " "'$1' into '$SRC_DIR/$SRC_REL_DIR/$1.tar.bz2'"
-		rm "$SRC_DIR/$SRC_REL_DIR/$RESULT_TARBALL" || error "Cannot remove old result tarball"
-		cp "$1.tar.bz2" "$SRC_DIR/$SRC_REL_DIR/"
+		tar cjf "$SRC_DIR${SRC_REL_DIR:+/$SRC_REL_DIR}/$1.tar.bz2" "$1" || error "Cannot tar: " "'$1' into '$SRC_DIR${SRC_REL_DIR:+/$SRC_REL_DIR}/$1.tar.bz2'"
+		rm "$SRC_DIR${SRC_REL_DIR:+/$SRC_REL_DIR}/$RESULT_TARBALL" || error "Cannot remove old result tarball"
+		cp "$1.tar.bz2" "$SRC_DIR${SRC_REL_DIR:+/$SRC_REL_DIR}/"
 	)
 	if [ $? -ne 0 ]; then
 		return 1
@@ -150,13 +155,11 @@ find_last_packed_version_svn() {
 }
 
 need_update_svn() {
-	(
-		cd "$SRC_DIR"
-		# what is last revision in spec file?
-		find_last_packed_version_svn
-		# were there any changes since that revision?
-		[ "$(svn log -r "$OLD_REVISION:HEAD" "$SRC_REL_DIR" 2>/dev/null | wc -l)" -gt 0 ]
-	)
+	# what is last revision in spec file?
+	find_last_packed_version_svn
+	# were there any changes since that revision?
+	NEW_REVISION="$(svn info | sed -n 's/^Revision: \([0-9]\+\)$/\1/p')"
+	[ "$(cd "$SRC_DIR"; svn log -r "$REVISION:HEAD" ${SRC_REL_DIR:+"$SRC_REL_DIR"} 2>/dev/null | wc -l)" -gt 0 ]
 }
 
 update_spec_svn() {
@@ -175,7 +178,6 @@ update_svn() {
 		report_on_error svn co "${SRC_URL}"
 		cd "$SRC_DIR"
 	fi
-	NEW_REVISION="$(svn info | sed -n 's/^Revision: \([0-9]\+\)$/\1/p')"
 }
 
 
@@ -183,28 +185,33 @@ update_svn() {
 # GIT functions
 ###############
 
-find_last_packed_version_git() {
-	OLD_REVISION="$(sed -n 's/^# git-revision: \([0-9a-f]\+\)$/\1/p' "$OBS_PRJ_DIR/$OBS_PKG/$OBS_PKG.spec")"
-	# TODO: I'm not sure if I need also this one:
-	#OLD_VERSION="$(sed -n 's/^Version:[[:blank:]]\+[0-9.]*\.\([0-9]\+\)[[:blank:]]*/\1/p' "$OBS_PRJ_DIR/$OBS_PKG/$OBS_PKG.spec")"
-}
-
 need_update_git() {
+	NEW_REVISION="$(git --git-dir="$SRC_DIR/.git" log --format=oneline -n 1 ${SRC_REL_DIR:+-- "$SRC_REL_DIR"} | cut -d\  -f1)"
 	# what is last revision in spec file?
-	find_last_packed_version_git
-	if [ -z "$OLD_REVISION" ]; then
+	if [ -z "$REVISION" ] || ! [[ $REVISION =~ [0-9a-f]\+ ]]; then
 		return 0
 	fi
 	# were there any changes since that revision?
-	[ "$(git --git-dir "$SRC_DIR/.git" log --format=oneline "$OLD_REVISION..HEAD" "$SRC_REL_DIR" 2>/dev/null | wc -l)" -gt 0 ]
+	[ "$(cd "$SRC_DIR"; git log --format=oneline "$REVISION..HEAD" ${SRC_REL_DIR:+-- "$SRC_REL_DIR"} 2>/dev/null | wc -l)" -gt 0 ]
+
 }
 
 update_spec_git() {
-	sed -i "/^# git-revision: .*$/d;s@^Version:.*@# git-revision: $NEW_REVISION\nVersion:\t$NEW_VERSION@" "$OBS_PRJ_DIR/$OBS_PKG/$OBS_PKG.spec"
-	#sed -i "s@^Version:.*@Version:\t$NEW_VERSION@;T;s@# git-revision: .*@# git-revision: $NEW_REVISION@;t;s@^@# git-revision: $NEW_REVISION\n@" "$OBS_PRJ_DIR/$OBS_PKG/$OBS_PKG.spec"
+	# there is already place with REVISION, update it
+	if grep '^### REVISION=' "$SPEC" &> /dev/null; then
+		sed -i "s/^### REVISION=.*$/### REVISION=$NEW_REVISION/" "$SPEC"
+	# there is not REVISION, but there is already some part of spec relevant for this script
+	elif grep '^### ' "$SPEC" &> /dev/null; then
+		local LINE="$(grep -m1 -n '^### ' "$SPEC" | cut -d\: -f1)"
+		sed -i "$((LINE+1))s/^/### REVISION=$NEW_REVISION\n/" "$SPEC"
+	else
+		sed -i "/^[^#]/s/^/### # begin - this section is used for automatic updates\n### REVISION=$NEW_REVISION\n### # end -this section is used for automatic updates\n/;T;q" "$SPEC"
+	fi
+	sed -i "s@^Version:.*@Version:\t$NEW_VERSION@" "$SPEC"
 }
 
 update_git() {
+	NEW_REVISION="$(git --git-dir="$SRC_DIR/.git" log --format=oneline -n 1 ${SRC_REL_DIR:+-- "$SRC_REL_DIR"} | cut -d\  -f1)"
 	if [ "$SKIP_UPDATE_SRC" -o "$SKIP_UPDATE" ]; then
 		inform "  * Skipping update of GIT repository ${SKIP_UPDATE:+(SKIP_UPDATE)} ${SKIP_UPDATE_SRC:+(SKIP_UPDATE_SRC)}"
 	else
@@ -225,7 +232,6 @@ update_git() {
 		fi
 		#cd "$OLD_PWD"
 	fi
-	NEW_REVISION="$(git --git-dir="$SRC_DIR/.git" log --format=oneline -n 1 | cut -d\  -f1)"
 }
 
 ###
@@ -243,14 +249,17 @@ commit_obs_package() {
 	fi
 	local OLD_PWD="$PWD"
 	local MSG="source_grabber autoupdate to revision $NEW_REVISION"
-	cd "$OBS_PRJ_DIR/$OBS_PKG"
+	cd "${SPEC%/*}"
 	if [ "$RESULT_TARBALL" != "${OLD_TARBALL##*/}" ]; then
 		rm "$OLD_TARBALL"
 	else
 		inform "    * Result tarball is the same as old tarball"
 	fi
+	inform "osc addremove"
 	report_on_error osc ar || warn "    * Error occured during osc addremove"
+	inform "osc vc"
 	report_on_error osc vc -m "$MSG" || warn "    * Error occured during update of .changes file"
+	inform "osc ci"
 	if ! report_on_error autocommit "$MSG"; then
 		error "    * Error occured during commit"
 		cd "$OLD_PWD"
@@ -321,6 +330,17 @@ find_result_tarball() {
 	fi
 }
 
+update_spec() {
+	case $REPO_TYPE in
+		GIT)
+			update_spec_git;;
+		SVN)
+			update_spec_svn;;
+		*)
+			error "Unknown repository type, cannot run $FUNCNAME" ;;
+	esac
+}
+
 make_tarball() {
 # Make bzip2 tarball by calling `make dist-bzip2'
 # Current working dir is source code in the repository
@@ -356,16 +376,16 @@ update_tarball() {
 # this function will create tarball using `make dist-bzip2'
 #
 	local OLD_PWD="$PWD"
-	cd "$SRC_DIR/$SRC_REL_DIR"
+	cd "$SRC_DIR${SRC_REL_DIR:+/$SRC_REL_DIR}"
 
 	if [ "$SKIP_TARBALL" ]; then
 		inform "    * Skipping tarball creation ${SKIP_TARBALL:+(SKIP_TARBALL)}"
 	else
 		# if there is specific action to be made, do it (i.g. autoreconf...)
-		if is_defined pre_update_tarball_hook; then
-			inform "      * pre_update_tarball_hook defined, calling it"
-			if ! report_on_error pre_update_tarball_hook; then
-				error "        * pre_update_tarball_hook failed"
+		if is_defined pre_configure_hook; then
+			inform "      * pre_configure_hook defined, calling it"
+			if ! report_on_error pre_configure_hook; then
+				error "        * pre_configure_hook failed"
 				cd "$OLD_PWD"
 				return 1
 			fi
@@ -393,23 +413,10 @@ update_tarball() {
 	fi
 	inform "    * result tarball: " "$RESULT_TARBALL"
 	inform "    * copying tarball to OBS package repository"
-	cp "$SRC_DIR/$SRC_REL_DIR/$RESULT_TARBALL" "$OBS_PRJ_DIR/$OBS_PKG/"
+	cp "$SRC_DIR${SRC_REL_DIR:+/$SRC_REL_DIR}/$RESULT_TARBALL" "${SPEC%/*}"
 	cd "$OLD_PWD"
 }
 
-find_old_tarball_from_spec() {
-	local NAME="$(sed -n 's/^Name:[[:blank:]]\+\([^[:blank:]]\+\)[[:blank:]]*$/\1/p' "$OBS_PRJ_DIR/$OBS_PKG/$OBS_PKG.spec")"
-	local VERSION="$(sed -n 's/^Version:[[:blank:]]\+\([^[:blank:]]\+\)[[:blank:]]*$/\1/p' "$OBS_PRJ_DIR/$OBS_PKG/$OBS_PKG.spec")"
-	local SOURCE="$(sed -n 's/^Source:[[[:blank:]]\+\([^[:blank:]]\+\)[[:blank:]]*$/\1/p' "$OBS_PRJ_DIR/$OBS_PKG/$OBS_PKG.spec")"
-	local FILENAME="$(sed "s/%{\?name}\?/$NAME/;s/%{\?version}\?/$VERSION/" <<< "$SOURCE")"
-	OLD_TARBALL="$(ls "$OBS_PRJ_DIR/$OBS_PKG/$FILENAME" 2> /dev/null)"
-	if [ ! -f "$OLD_TARBALL" ]; then
-		error "    * Cannot find tarball from spec file ($FILENAME)"
-		return 1
-	fi
-	inform "    * Found old tarball from spec file ($FILENAME)"
-	return 0
-}
 
 find_old_tarball_from_name() {
 	local OLD_TARBALLS="$(ls "$OBS_PRJ_DIR/$OBS_PKG/$PKG-"*.tar.{bz2,gz} 2> /dev/null)"
@@ -448,13 +455,13 @@ find_old_tarball() {
 update_package() {
 	inform "  * Updating package: " "$1"
 	# init OBS_PKG and SRC_REL_DIR to values specified in repo configuration or fallback to default
-	for i in OBS_PKG SRC_REL_DIR; do
-		if eval [ "\"\$$1_$i\"" ]; then
-			eval "$i"="\$$1_$i"
-		else
-			eval "$i"="'$1'"
-		fi
-	done
+#	for i in OBS_PKG SRC_REL_DIR; do
+#		if eval [ "\"\$$1_$i\"" ]; then
+#			eval "$i"="\$$1_$i"
+#		else
+#			eval "$i"="'$1'"
+#		fi
+#	done
 
 	if ! update_obs; then
 		error "    * Cannot obtain OBS package repository"
@@ -539,3 +546,217 @@ interrupt_handler() {
 }
 
 trap interrupt_handler SIGINT SIGTERM
+
+##################################################################
+
+dependency_hack() {
+    # create backup of configure.ac
+    mv configure.ac configure.ac.backup
+    # don't require any specific version
+    sed 's@ \(>=\?\) [0-9.]*@ \1 0.0.0@g' configure.ac.backup > configure.ac
+    # create configure
+    autogen -ifv
+    # put changes back, so original file gets to result tarball
+    cp configure.ac.backup configure.ac
+}
+
+detect_repo_type() {
+	if [[ $SRC_URL =~ ^git:// ]] || [[ $SRC_URL =~ \.git$ ]]; then
+		REPO_TYPE=GIT
+		return 0
+	elif [[ $SRC_URL =~ ^svn:// ]]; then
+		REPO_TYPE=SVN
+		return 0
+	fi
+	return 1
+}
+
+new_version() {
+	local BEGIN END
+	{
+		read BEGIN
+		read END
+	} < <(sed -n "s/^\(.*\)${VERSION//./\\.}\(.*\)/\1\n\2/p" <<< "$OLD_TARBALL")
+	if [ -z "$BEGIN" -o -z "$END" ]; then
+		error "Cannot find old find string before version and after version in old source file"
+		return 1
+	fi
+	local WITHOUT_BEGIN="${RESULT_TARBALL#$BEGIN}"
+	if [ "${WITHOUT_BEGIN}" = "${RESULT_TARBALL}" ]; then
+		error "Cannot cut '$BEGIN' from beginning of '$RESULT_TARBALL'"
+		return 1
+	fi
+	local WITHOUT_END="${WITHOUT_BEGIN%$END}"
+	if [ "$WITHOUT_END" = "${WITHOUT_BEGIN}" ]; then
+		error "Cannot cut '$END' from end of '$WITHOUT_BEGIN'"
+		return 1
+	fi
+	NEW_VERSION="${WITHOUT_END}"
+}
+
+locate_spec() {
+	SPEC="$(ls "$OBS_PRJ_DIR/$OBS_PKG/"*.spec)"
+	local NUM="$(wc -l <<< "$SPEC")"
+	case NUM in
+		0)
+			error "Cannot find spec file"; return 1;;
+		1)
+			inform "Spec file: " "$SPEC";;
+		*)
+			error "Multiple spec file detected, I don't know which one to use"; return 1;;
+	esac
+}
+
+read_spec() {
+# Find all important information from spec file.
+# Need to run: SPEC
+	# find SRC_URL, NAME, VERSION
+	source <(rpmspec -D "%_sourcedir ${SPEC%/*}" -q --qf 'SRC_URL=%{url}\nNAME=%{name}\nVERSION=%{version}\n' "$SPEC" | head -n 3)
+	if [ -z "$SRC_URL" -o -z "$NAME" -o -z "$VERSION" ]; then
+		error "Cannot parse from specfile: " "${SRC_URL:-SRC_URL} ${NAME:-NAME} ${VERSION:-VERSION}"
+		return 1
+	fi
+	# find current source
+	OLD_TARBALL="$(rpmspec -D "%_sourcedir ${SPEC%/*}" -P "$SPEC" | \
+		sed -n 's/Source:[[:blank:]]*\([^[:blank:]]\+\)[[:blank:]]*$/\1/p')"
+	if [ ! -f "${SPEC%/*}/$OLD_TARBALL" ]; then
+		error "Cannot identify old tarball"
+		return 1
+	fi
+	# read hook functions, SRC_REL_DIR, REVISION
+	source <(sed -n 's/^### //p' "$SPEC")
+	if [ -z "$REVISION" ]; then
+		warn "Cannot parse from specfile: " "'${REVISION:-REVISION}'"
+		warn "Continuing anyway..."
+#		return 1
+	fi
+	find_src_dir
+	if [ -z "$REPO_TYPE" ]; then
+		if ! detect_repo_type; then
+			error "Cannot recognize repository type for '$SRC_URL'. Specify manually as \$REPO_TYPE or make detect_repo_type() more clever"
+			return 1
+		fi
+	fi
+}
+
+find_src_dir() {
+	unset SRC_DIR
+	for i in $(seq 0 2 ${#LOCAL_REPOS[@]}); do
+		if [ "${1:-$SRC_URL}" = "${LOCAL_REPOS[i]}" ]; then
+			SRC_DIR="${LOCAL_REPOS[i+1]}"
+			break
+		fi
+	done
+	if [ -z "$SRC_DIR" ]; then
+		error "Local repository for '${1:-$SRC_URL}' is not defined, please, specify in local configuration"
+	else
+		inform "Local repository: " "$SRC_DIR"
+	fi
+}
+
+need_update() {
+	case $REPO_TYPE in
+		GIT)
+			need_update_git ;;
+		SVN)
+			need_update_svn ;;
+		*)
+			error "Unknown repository type: " "'$REPO_TYPE'" ;;
+	esac
+}
+update_project_package() {
+	#locate_spec
+	(
+		read_spec || exit 1
+		
+		inform "    * Checking if update is needed"
+		if ! need_update; then
+			inform "      * Tarball is up to date, no update needed."
+			return 0
+		fi
+		inform "      * Tarball needs update."
+
+		inform "    * Updating tarball"
+		if ! update_tarball; then
+			error "      * Tarball update failed, aborting this package"
+			return 1
+		fi
+
+		inform "    * Updating spec file"
+		if ! new_version; then
+			error "      * Cannot recognize new version"
+			return 1
+		fi
+
+		inform "      * new version: " "$NEW_VERSION"
+		if ! update_spec; then
+			error "      * Cannot update spec file"
+			return 1
+		fi
+
+		inform "    * Commiting package"
+		if ! commit_obs_package; then
+			error "      * Cannot commit package"
+			return 1
+		fi
+	)
+}
+
+is_spec_to_be_used() {
+# is the spec file usable for this script?
+# FIXME: define, what is needed for using spec file as source for update
+# SRC_REL_DIR may be empty (using repository root)
+# REPO_TYPE may be empty (URL may be sufficient for identifying repository type git:// svn://)
+# REVISION may be undefined for the first time and it means that update is needed for sure
+
+	grep '^### ' "$1" &> /dev/null
+}
+
+update_vcs() {
+	case $REPO_TYPE in
+		GIT)
+			update_git ;;
+		SVN)
+			update_svn ;;
+		*)
+			error "Unknown repository type: " "'$REPO_TYPE'";;
+	esac
+}
+
+update_project() {
+#	$1	project directory
+	OBS_PRJ_DIR="$1"
+	if [ ! -d "$1" ]; then
+		error "Project '$1' doesn't exists"
+		return 1
+	elif [ ! -d "$1/.osc" ]; then
+		error "Directory '$1' doesn't seem to be OBS project"
+		return 1
+	fi
+	OBS_PRJ="$(cat "$OBS_PRJ_DIR/.osc/_project" 2>/dev/null)"
+	# repositories to update
+	inform "Updating needed VCS repositories"
+	local line
+	while read line; do
+			ARRAY=( $line )
+			echo "${ARRAY[*]}"
+			REPO_TYPE="${ARRAY[0]}"
+			SRC_URL="${ARRAY[1]}"
+			SPEC="${ARRAY[2]}"
+			find_src_dir
+			update_vcs || return 1
+	done < <(for SPEC in "$OBS_PRJ_DIR"/eina/eina.spec; do
+		if is_spec_to_be_used "$SPEC"; then
+			read_spec &> /dev/null
+			echo "$REPO_TYPE $SRC_URL $SPEC"
+		fi
+	done | sort -uk 1,2)
+	unset SRC_DIR SRC_URL REPO_TYPE SPEC ARRAY
+	for SPEC in "$OBS_PRJ_DIR"/*/*.spec; do
+		if is_spec_to_be_used "$SPEC"; then
+			inform "Updating: " "'${SPEC#${OBS_PRJ_DIR%/}/}'"
+			update_project_package "$SPEC"
+		fi
+	done	
+
+}
