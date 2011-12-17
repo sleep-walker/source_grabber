@@ -114,13 +114,14 @@ is_defined() {
 }
 
 pkg_specific() {
-	if is_defined "${PKG//-/_}_${FUNCNAME[1]}"; then
-		inform "      * package specific ${FUNCNAME[1]} found, calling it"
-		"${PKG//-/_}_${FUNCNAME[1]}"
-		return $?
-	else
-		return 255
-	fi
+	return 255
+#	if is_defined "${PKG//-/_}_${FUNCNAME[1]}"; then
+#		inform "      * package specific ${FUNCNAME[1]} found, calling it"
+#		"${PKG//-/_}_${FUNCNAME[1]}"
+#		return $?
+#	else
+#		return 255
+#	fi
 }
 
 rename_dir_in_tarball() {
@@ -188,7 +189,7 @@ update_svn() {
 need_update_git() {
 	NEW_REVISION="$(git --git-dir="$SRC_DIR/.git" log --format=oneline -n 1 ${SRC_REL_DIR:+-- "$SRC_REL_DIR"} | cut -d\  -f1)"
 	# what is last revision in spec file?
-	if [ -z "$REVISION" ] || ! [[ $REVISION =~ ^[0-9a-f]\+$ ]]; then
+	if [ -z "$REVISION" ] || ! [[ $REVISION =~ ^[0-9a-f]+$ ]]; then
 		return 0
 	fi
 	# were there any changes since that revision?
@@ -204,6 +205,7 @@ update_spec_git() {
 	elif grep '^### ' "$SPEC" &> /dev/null; then
 		local LINE="$(grep -m1 -n '^### ' "$SPEC" | cut -d\: -f1)"
 		sed -i "$((LINE+1))s/^/### REVISION=$NEW_REVISION\n/" "$SPEC"
+	# there is nothing relevant for this script yet
 	else
 		sed -i "/^[^#]/s/^/### # begin - this section is used for automatic updates\n### REVISION=$NEW_REVISION\n### # end -this section is used for automatic updates\n/;T;q" "$SPEC"
 	fi
@@ -325,10 +327,15 @@ find_result_tarball() {
 		return "$RES"
 	fi
 	RESULT_TARBALL="$(ls "${SRC_REL_DIR##*/}"*.tar.bz2 2>/dev/null)"
-	if [ "$(wc -l <<< "$RESULT_TARBALL")" -ne 1 ]; then
-		error "      * Cannot locate tarball result"
-		return 1
-	fi
+	local NUM="$(wc -l <<< "$RESULT_TARBALL")"
+	case $NUM in
+		1)
+			true ;;
+		0)
+			error "      * Cannot locate tarball result" ;;
+		*)
+			error "      * Multiple result tarballs found" ;;
+	esac
 }
 
 update_spec() {
@@ -382,6 +389,10 @@ update_tarball() {
 	if [ "$SKIP_TARBALL" ]; then
 		inform "    * Skipping tarball creation ${SKIP_TARBALL:+(SKIP_TARBALL)}"
 	else
+#		if find_result_tarball &> /dev/null; then
+#			error "found tarball matching my rules before making one"
+#			return 3
+#		fi
 		# if there is specific action to be made, do it (i.g. autoreconf...)
 		if is_defined pre_configure_hook; then
 			inform "      * pre_configure_hook defined, calling it"
@@ -414,7 +425,7 @@ update_tarball() {
 	fi
 	inform "    * result tarball: " "$RESULT_TARBALL"
 	inform "    * copying tarball to OBS package repository"
-	cp "$SRC_DIR${SRC_REL_DIR:+/$SRC_REL_DIR}/$RESULT_TARBALL" "${SPEC%/*}"
+	mv "$SRC_DIR${SRC_REL_DIR:+/$SRC_REL_DIR}/$RESULT_TARBALL" "${SPEC%/*}"
 	cd "$OLD_PWD"
 }
 
@@ -640,7 +651,7 @@ read_spec() {
 		warn "Continuing anyway..."
 #		return 1
 	fi
-	find_src_dir
+	find_src_dir || return 1
 	if [ -z "$REPO_TYPE" ]; then
 		if ! detect_repo_type; then
 			error "Cannot recognize repository type for '$SRC_URL'. Specify manually as \$REPO_TYPE or make detect_repo_type() more clever"
@@ -765,12 +776,20 @@ update_project() {
 			echo "$REPO_TYPE $SRC_URL $SPEC"
 		fi
 	done | sort -uk 1,2)
-	unset SRC_DIR SRC_URL REPO_TYPE SPEC ARRAY
+	unset SRC_DIR SRC_URL REPO_TYPE SPEC ARRAY BROKEN
 	for SPEC in "$OBS_PRJ_DIR"/*/*.spec; do
 		if is_spec_to_be_used "$SPEC"; then
 			inform "Updating: " "'${SPEC#${OBS_PRJ_DIR%/}/}'"
-			update_project_package "$SPEC"
+			if ! update_project_package "$SPEC"; then
+				BROKEN[${#BROKEN[@]}]="$SPEC"
+			fi
 		fi
-	done	
+	done
+	if [ "$BROKEN" ]; then
+		inform "Failed spec files:"
+		for i in "${BROKEN[@]}"; do
+			echo "   $i"
+		done
+	fi
 
 }
