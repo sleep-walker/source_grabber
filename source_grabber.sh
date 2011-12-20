@@ -125,7 +125,7 @@ pkg_specific() {
 }
 
 rename_dir_in_tarball() {
-	if [ "$RESULT_TARBALL" = "$1.tar.bz2" ]; then
+	if [ "$RESULT_TARBALL" = "$1" ]; then
 		warn "Result tarball and the new one after rename is the same, skipping"
 		return 0
 	fi
@@ -133,16 +133,17 @@ rename_dir_in_tarball() {
 	(
 		set -e
 		cd "$TMPDIR"
-		tar xjf "$SRC_DIR${SRC_REL_DIR:+/$SRC_REL_DIR}/$RESULT_TARBALL" || error "Cannot untar result tarball"
-		mv "${RESULT_TARBALL%.tar.bz2}" "$1" || error "Cannot rename: " "'${RESULT_TARBALL%.tar.bz2}' --> '$1'"
-		tar cjf "$SRC_DIR${SRC_REL_DIR:+/$SRC_REL_DIR}/$1.tar.bz2" "$1" || error "Cannot tar: " "'$1' into '$SRC_DIR${SRC_REL_DIR:+/$SRC_REL_DIR}/$1.tar.bz2'"
-		rm "$SRC_DIR${SRC_REL_DIR:+/$SRC_REL_DIR}/$RESULT_TARBALL" || error "Cannot remove old result tarball"
-		cp "$1.tar.bz2" "$SRC_DIR${SRC_REL_DIR:+/$SRC_REL_DIR}/"
+		tar xjf "${SPEC%/*}/$RESULT_TARBALL" || error "Cannot untar result tarball"
+		mv "${RESULT_TARBALL%.tar.bz2}" "${1%.tar.bz2}" || error "Cannot rename: " "'${RESULT_TARBALL%.tar.bz2}' --> '$1'"
+		tar cjf "${SPEC%/*}/$1" "${1%.tar.bz2}" || error "Cannot tar: " "'${1%.tar.bz2}' into '$SRC_DIR${SRC_REL_DIR:+/$SRC_REL_DIR}/$1'"
+		rm "${SPEC%/*}/$RESULT_TARBALL" || error "Cannot remove old result tarball"
+		#cp "$1" "$SRC_DIR${SRC_REL_DIR:+/$SRC_REL_DIR}/"
 	)
 	if [ $? -ne 0 ]; then
 		return 1
 	fi
-	RESULT_TARBALL="$1.tar.bz2"
+	NEW_VERSION="$RENAMED_VERSION"
+	RESULT_TARBALL="$1"
 	cd "$OLD_PWD"
 }
 
@@ -584,33 +585,49 @@ detect_repo_type() {
 }
 
 new_version() {
-	local BEGIN END
+# NOTE: This function expects no manipulation with tarball name
+# 1] split old tarball name into 3 parts:
+#    begin - old version string - end
+# 2] from result tarball cut begin and end to get new version string
+
+	# 1] split old name to these variables
 	{
-		read BEGIN
-		read END
+		read NAME_BEGIN
+		read NAME_END
 	} < <(sed -n "s/^\(.*\)${VERSION//./\\.}\(.*\)/\1\n\2/p" <<< "$OLD_TARBALL")
-	if [ -z "$BEGIN" -o -z "$END" ]; then
+	# check if everything is as it should be
+	if [ -z "$NAME_BEGIN" -o -z "$NAME_END" ]; then
 		error "Cannot find old find string before version and after version in old source file"
 		return 1
 	fi
-	local WITHOUT_BEGIN="${RESULT_TARBALL#$BEGIN}"
+
+	# 2] cut begin (prefix) and end (suffix) if possible
+	local WITHOUT_BEGIN="${RESULT_TARBALL#$NAME_BEGIN}"
 	if [ "${WITHOUT_BEGIN}" = "${RESULT_TARBALL}" ]; then
-		error "Cannot cut '$BEGIN' from beginning of '$RESULT_TARBALL'"
+		error "Cannot cut '$NAME_BEGIN' from beginning of '$RESULT_TARBALL'"
 		return 1
 	fi
-	local WITHOUT_END="${WITHOUT_BEGIN%$END}"
+	local WITHOUT_END="${WITHOUT_BEGIN%$NAME_END}"
 	if [ "$WITHOUT_END" = "${WITHOUT_BEGIN}" ]; then
-		error "Cannot cut '$END' from end of '$WITHOUT_BEGIN'"
+		error "Cannot cut '$NAME_END' from end of '$WITHOUT_BEGIN'"
 		return 1
 	fi
 	# it's not possible to have '-' in version string
 	local WITHOUT_DASH="${WITHOUT_END%%-*}"
-	if [ "$WITHOUT_END" != "${WITHOUT_DASH}" ]; then
-		# so if there is, use only left part
-		# but also rename tarball and contained directory
-		RENAME_TO="${WITHOUT_END%%-*}"
+	# if there is RENAME_TO defined, evaluate it (so it can use variables defined after reading configuration)
+	if [ "$RENAME_TO" ]; then
+		eval eval RENAME_TO="\"$RENAME_TO\""
+		eval eval RENAMED_VERSION="\"$RENAMED_VERSION\""
 	else
-		unset RENAME_TO
+		if [ "$WITHOUT_END" != "${WITHOUT_DASH}" ]; then
+			# so if there is, use only left part
+			# but also rename tarball and contained directory
+			RENAME_TO="$NAME_BEGIN${WITHOUT_DASH}$NAME_END"
+			RENAMED_VERSION="$WITHOUT_DASH"
+			inform "Version contains '-', directory in tarball and the filename will be altered to: " "$RENAME_TO"
+		else
+			unset RENAME_TO RENAMED_VERSION
+		fi
 	fi
 	NEW_VERSION="${WITHOUT_END}"
 }
@@ -662,9 +679,10 @@ read_spec() {
 
 find_src_dir() {
 	unset SRC_DIR
-	for i in $(seq 0 2 ${#LOCAL_REPOS[@]}); do
+	for i in $(seq 0 3 ${#LOCAL_REPOS[@]}); do
 		if [ "${1:-$SRC_URL}" = "${LOCAL_REPOS[i]}" ]; then
-			SRC_DIR="${LOCAL_REPOS[i+1]}"
+			REPO_TYPE="${LOCAL_REPOS[i+1]}"
+			SRC_DIR="${LOCAL_REPOS[i+2]}"
 			break
 		fi
 	done
@@ -689,6 +707,7 @@ update_project_package() {
 	#locate_spec
 	(
 		SPEC="$1"
+		unset REVISION OLD_TARBALL RESULT_TARBALL RENAME_TO NAME_BEGIN NAME_END
 		read_spec || exit 1
 		
 		inform "    * Checking if update is needed"
@@ -709,7 +728,10 @@ update_project_package() {
 			error "      * Cannot recognize new version"
 			return 1
 		fi
-
+		if [ "$RENAME_TO" ]; then
+			inform "Converting tarball from '$RESULT_TARBALL' to '$RENAME_TO'"
+			rename_dir_in_tarball "$RENAME_TO"
+		fi
 		inform "      * new version: " "$NEW_VERSION"
 		if ! update_spec; then
 			error "      * Cannot update spec file"
