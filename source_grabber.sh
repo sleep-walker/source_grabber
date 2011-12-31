@@ -113,6 +113,7 @@ is_defined() {
 	type -t "$1" &> /dev/null
 }
 
+# TODO: currently unused - use (update) or remove
 pkg_specific() {
 	return 255
 #	if is_defined "${PKG//-/_}_${FUNCNAME[1]}"; then
@@ -125,6 +126,8 @@ pkg_specific() {
 }
 
 rename_dir_in_tarball() {
+#	$1	new tarball name without suffix
+
 	if [ "$RESULT_TARBALL" = "$1" ]; then
 		warn "Result tarball and the new one after rename is the same, skipping"
 		return 0
@@ -137,7 +140,6 @@ rename_dir_in_tarball() {
 		mv "${RESULT_TARBALL%.tar.bz2}" "${1%.tar.bz2}" || error "Cannot rename: " "'${RESULT_TARBALL%.tar.bz2}' --> '$1'"
 		tar cjf "${SPEC%/*}/$1" "${1%.tar.bz2}" || error "Cannot tar: " "'${1%.tar.bz2}' into '$SRC_DIR${SRC_REL_DIR:+/$SRC_REL_DIR}/$1'"
 		rm "${SPEC%/*}/$RESULT_TARBALL" || error "Cannot remove old result tarball"
-		#cp "$1" "$SRC_DIR${SRC_REL_DIR:+/$SRC_REL_DIR}/"
 	)
 	if [ $? -ne 0 ]; then
 		return 1
@@ -145,6 +147,7 @@ rename_dir_in_tarball() {
 	NEW_VERSION="$RENAMED_VERSION"
 	RESULT_TARBALL="$1"
 	cd "$OLD_PWD"
+	rm -rf "$TMPDIR"
 }
 
 ###
@@ -254,16 +257,16 @@ commit_obs_package() {
 	else
 		inform "    * Result tarball is the same as old tarball"
 	fi
-	inform "osc addremove"
+	inform "      * adding/removing tarballs"
 	report_on_error osc ar || warn "    * Error occured during osc addremove"
-	inform "osc vc"
+	inform "      * adding record to .changes file"
 	report_on_error osc vc -m "$MSG" || warn "    * Error occured during update of .changes file"
 	if [ "$SKIP_COMMIT" ]; then
 		inform "    * Skipping commit to OBS ${SKIP_COMMIT:+(SKIP_COMMIT)}"
 		cd "$OLD_PWD"
 		return 0
 	fi
-	inform "osc ci"
+	inform "      * commiting changes"
 	if ! report_on_error autocommit "$MSG"; then
 		error "    * Error occured during commit"
 		cd "$OLD_PWD"
@@ -687,9 +690,9 @@ find_src_dir() {
 		fi
 	done
 	if [ -z "$SRC_DIR" ]; then
-		error "Local repository for '${1:-$SRC_URL}' is not defined, please, specify in local configuration"
+		error "    * Local repository for '${1:-$SRC_URL}' is not defined, please, specify in local configuration"
 	else
-		inform "Local repository: " "$SRC_DIR"
+		inform "    * Local repository: " "$SRC_DIR"
 	fi
 }
 
